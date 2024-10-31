@@ -1,0 +1,1 @@
+# wr-trivy-dist
