@@ -1,0 +1,458 @@
+From 8201d7cdf91b23dfe28f01e7526736ff5a7e299d Mon Sep 17 00:00:00 2001
+From: David Reyna <David.Reyna@windriver.com>
+Date: Sun, 30 Oct 2022 19:12:50 -0400
+Subject: [PATCH] feat(wrlinux): Add Wind River Linux support
+
+This commit was not accepted by the upstream.
+
+Signed-off-by: Sakib Sajal <sakib.sajal@windriver.com>
+Signed-off-by: William Lyu <William.Lyu@windriver.com>
+Signed-off-by: David Reyna <David.Reyna@windriver.com>
+---
+ Makefile                                      |   2 +-
+ pkg/vulnsrc/vulnerability/const.go            |   1 +
+ pkg/vulnsrc/vulnerability/vulnerability.go    |   2 +-
+ pkg/vulnsrc/vulnsrc.go                        |   2 +
+ .../vuln-list/wrlinux/CVE-2020-24241.json     |  29 +++
+ pkg/vulnsrc/wrlinux/types.go                  |  18 ++
+ pkg/vulnsrc/wrlinux/wrlinux.go                | 207 ++++++++++++++++++
+ pkg/vulnsrc/wrlinux/wrlinux_test.go           |  94 ++++++++
+ 8 files changed, 353 insertions(+), 2 deletions(-)
+ create mode 100644 pkg/vulnsrc/wrlinux/testdata/vuln-list/wrlinux/CVE-2020-24241.json
+ create mode 100644 pkg/vulnsrc/wrlinux/types.go
+ create mode 100644 pkg/vulnsrc/wrlinux/wrlinux.go
+ create mode 100644 pkg/vulnsrc/wrlinux/wrlinux_test.go
+
+diff --git a/Makefile b/Makefile
+index 0582d63..e1d9aec 100644
+--- a/Makefile
++++ b/Makefile
+@@ -77,7 +77,7 @@ db-fetch-langs:
+ 
+ .PHONY: db-build
+ db-build: trivy-db
+-	./trivy-db build --cache-dir ./$(CACHE_DIR) --output-dir ./$(OUT_DIR) --update-interval 6h
++	./trivy-db build --cache-dir ./$(CACHE_DIR) --output-dir ./$(OUT_DIR) --update-interval 1752000h
+ 
+ .PHONY: db-compact
+ db-compact: $(GOBIN)/bbolt out/trivy.db
+diff --git a/pkg/vulnsrc/vulnerability/const.go b/pkg/vulnsrc/vulnerability/const.go
+index 19fa371..521c01c 100644
+--- a/pkg/vulnsrc/vulnerability/const.go
++++ b/pkg/vulnsrc/vulnerability/const.go
+@@ -21,6 +21,7 @@ const (
+ 	AzureLinux            types.SourceID = "azure"
+ 	CBLMariner            types.SourceID = "cbl-mariner"
+ 	Photon                types.SourceID = "photon"
++	WRLinux               types.SourceID = "wrlinux"
+ 	RubySec               types.SourceID = "ruby-advisory-db"
+ 	PhpSecurityAdvisories types.SourceID = "php-security-advisories"
+ 	NodejsSecurityWg      types.SourceID = "nodejs-security-wg"
+diff --git a/pkg/vulnsrc/vulnerability/vulnerability.go b/pkg/vulnsrc/vulnerability/vulnerability.go
+index 440a495..0b983f1 100644
+--- a/pkg/vulnsrc/vulnerability/vulnerability.go
++++ b/pkg/vulnsrc/vulnerability/vulnerability.go
+@@ -14,7 +14,7 @@ const (
+ )
+ 
+ var (
+-	sources = []types.SourceID{NVD, RedHat, Debian, Ubuntu, Alpine, Amazon, OracleOVAL, SuseCVRF, Photon,
++	sources = []types.SourceID{NVD, RedHat, Debian, Ubuntu, Alpine, Amazon, OracleOVAL, SuseCVRF, Photon, WRLinux,
+ 		ArchLinux, Alma, Rocky, CBLMariner, AzureLinux, RubySec, PhpSecurityAdvisories, NodejsSecurityWg, GHSA, GLAD, OSV, K8sVulnDB,
+ 	}
+ )
+diff --git a/pkg/vulnsrc/vulnsrc.go b/pkg/vulnsrc/vulnsrc.go
+index eafb82c..908d62b 100644
+--- a/pkg/vulnsrc/vulnsrc.go
++++ b/pkg/vulnsrc/vulnsrc.go
+@@ -25,6 +25,7 @@ import (
+ 	susecvrf "github.com/aquasecurity/trivy-db/pkg/vulnsrc/suse-cvrf"
+ 	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/ubuntu"
+ 	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/wolfi"
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/wrlinux"
+ )
+ 
+ type VulnSrc interface {
+@@ -56,6 +57,7 @@ var (
+ 		wolfi.NewVulnSrc(),
+ 		chainguard.NewVulnSrc(),
+ 		bitnami.NewVulnSrc(),
++		wrlinux.NewVulnSrc(),
+ 
+ 		k8svulndb.NewVulnSrc(),
+ 
+diff --git a/pkg/vulnsrc/wrlinux/testdata/vuln-list/wrlinux/CVE-2020-24241.json b/pkg/vulnsrc/wrlinux/testdata/vuln-list/wrlinux/CVE-2020-24241.json
+new file mode 100644
+index 0000000..65e522a
+--- /dev/null
++++ b/pkg/vulnsrc/wrlinux/testdata/vuln-list/wrlinux/CVE-2020-24241.json
+@@ -0,0 +1,29 @@
++{
++  "Candidate": "CVE-2020-24241",
++  "PublicDate": "2020-08-25T00:00:00Z",
++  "Description": "In Netwide Assembler (NASM) 2.15rc10, there is heap use-after-free in saa_wbytes in nasmlib/saa.c.",
++  "Notes": null,
++  "Priority": "medium",
++  "Bugs": [
++    "LINCD-2974",
++    "LIN1019-5289",
++    "LIN1018-6614",
++    "LIN10-7689"
++  ],
++  "Patches": {
++    "nasm": {
++      "10.18.44.1": {
++        "Status": "pending",
++        "Note": ""
++      },
++      "10.19.45.1": {
++        "Status": "released",
++        "Note": "10.19.45.11"
++      },
++      "10.20.6.0": {
++        "Status": "not-affected",
++        "Note": ""
++      }
++    }
++  }
++}
+diff --git a/pkg/vulnsrc/wrlinux/types.go b/pkg/vulnsrc/wrlinux/types.go
+new file mode 100644
+index 0000000..c563ede
+--- /dev/null
++++ b/pkg/vulnsrc/wrlinux/types.go
+@@ -0,0 +1,18 @@
++package wrlinux
++
++type WRLinuxCVE struct {
++	Description 	string `json:"description"`
++	Candidate   	string
++	Priority    	string
++	Patches     	map[PackageName]Patch
++	References  	[]string
++}
++
++type PackageName string
++type Release string
++type Patch map[Release]Status
++
++type Status struct {
++	Status string
++	Note   string
++}
+diff --git a/pkg/vulnsrc/wrlinux/wrlinux.go b/pkg/vulnsrc/wrlinux/wrlinux.go
+new file mode 100644
+index 0000000..d7f3965
+--- /dev/null
++++ b/pkg/vulnsrc/wrlinux/wrlinux.go
+@@ -0,0 +1,207 @@
++/*
++ * Copyright (c) 2022 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"log"
++	"path/filepath"
++	"slices"
++	"strings"
++
++	bolt "go.etcd.io/bbolt"
++	"golang.org/x/xerrors"
++
++	"github.com/aquasecurity/trivy-db/pkg/db"
++	"github.com/aquasecurity/trivy-db/pkg/types"
++	"github.com/aquasecurity/trivy-db/pkg/utils"
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/vulnerability"
++)
++
++const (
++	wrlinuxDir      = "wrlinux"
++	platformFormat 	= "WRLinux OS %s"
++)
++
++var (
++	targetStatuses = []string{"pending", "released"}
++
++	source = types.DataSource{
++		ID:   vulnerability.WRLinux,
++		Name: "WRLinux OS CVE metadata",
++		URL:  "https://support2.windriver.com",
++	}
++)
++
++type Option func(src *VulnSrc)
++
++func WithCustomPut(put db.CustomPut) Option {
++	return func(src *VulnSrc) {
++		src.put = put
++	}
++}
++
++type VulnSrc struct {
++	put db.CustomPut
++	dbc db.Operation
++}
++
++func NewVulnSrc(opts ...Option) VulnSrc {
++	src := VulnSrc{
++		put: defaultPut,
++		dbc: db.Config{},
++	}
++
++	for _, o := range opts {
++		o(&src)
++	}
++
++	return src
++}
++
++func (vs VulnSrc) Name() types.SourceID {
++	return source.ID
++}
++
++func (vs VulnSrc) Update(dir string) error {
++	rootDir := filepath.Join(dir, "vuln-list", wrlinuxDir)
++	var cves []WRLinuxCVE
++	err := utils.FileWalk(rootDir, func(r io.Reader, path string) error {
++		var cve WRLinuxCVE
++		if err := json.NewDecoder(r).Decode(&cve); err != nil {
++			return xerrors.Errorf("failed to decode WRLinux JSON: %w", err)
++		}
++		cves = append(cves, cve)
++		return nil
++	})
++	if err != nil {
++		return xerrors.Errorf("error in wrlinux walk: %w", err)
++	}
++
++	if err = vs.save(cves); err != nil {
++		return xerrors.Errorf("error in wrlinux save: %w", err)
++	}
++
++	return nil
++}
++
++func (vs VulnSrc) save(cves []WRLinuxCVE) error {
++	log.Println("Saving wrlinux DB")
++	err := vs.dbc.BatchUpdate(func(tx *bolt.Tx) error {
++		err := vs.commit(tx, cves)
++		if err != nil {
++			return err
++		}
++		return nil
++	})
++	if err != nil {
++		return xerrors.Errorf("error in batch update: %w", err)
++	}
++	return nil
++}
++
++func (vs VulnSrc) commit(tx *bolt.Tx, cves []WRLinuxCVE) error {
++	for _, cve := range cves {
++		if err := vs.put(vs.dbc, tx, cve); err != nil {
++			return xerrors.Errorf("put error: %w", err)
++		}
++	}
++	return nil
++}
++
++func (vs VulnSrc) Get(osVer string, pkgName string) ([]types.Advisory, error) {
++	bucket := fmt.Sprintf(platformFormat, OsVerToRelease(osVer))
++	advisories, err := vs.dbc.GetAdvisories(bucket, pkgName)
++	if err != nil {
++		return nil, xerrors.Errorf("failed to get wrlinux advisories: %w", err)
++	}
++	return advisories, nil
++}
++
++func defaultPut(dbc db.Operation, tx *bolt.Tx, advisory interface{}) error {
++	cve, ok := advisory.(WRLinuxCVE)
++	if !ok {
++		return xerrors.New("unknown type")
++	}
++	for packageName, patch := range cve.Patches {
++		pkgName := string(packageName)
++		for osVer, status := range patch {
++			if !slices.Contains(targetStatuses, status.Status) {
++				continue
++			}
++			release := OsVerToRelease(string(osVer))
++			platformName := fmt.Sprintf(platformFormat, release)
++			if err := dbc.PutDataSource(tx, platformName, source); err != nil {
++				return xerrors.Errorf("failed to put data source: %w", err)
++			}
++
++			adv := types.Advisory{}
++			if status.Status == "released" {
++				adv.FixedVersion = status.Note
++			}
++			if err := dbc.PutAdvisoryDetail(tx, cve.Candidate, pkgName, []string{platformName}, adv); err != nil {
++				return xerrors.Errorf("failed to save wrlinux advisory: %w", err)
++			}
++
++			vuln := types.VulnerabilityDetail{
++				Severity:    SeverityFromPriority(cve.Priority),
++				References:  cve.References,
++				Description: cve.Description,
++			}
++			if err := dbc.PutVulnerabilityDetail(tx, cve.Candidate, source.ID, vuln); err != nil {
++				return xerrors.Errorf("failed to save wrlinux vulnerability: %w", err)
++			}
++
++			// for optimization
++			if err := dbc.PutVulnerabilityID(tx, cve.Candidate); err != nil {
++				return xerrors.Errorf("failed to save the vulnerability ID: %w", err)
++			}
++		}
++	}
++
++	return nil
++}
++
++// SeverityFromPriority converts wrlinux priority into Trivy severity
++func SeverityFromPriority(priority string) types.Severity {
++	switch priority {
++	case "new":
++		return types.SeverityUnknown
++	case "negligible", "low":
++		return types.SeverityLow
++	case "medium":
++		return types.SeverityMedium
++	case "high":
++		return types.SeverityHigh
++	case "critical":
++		return types.SeverityCritical
++	default:
++		return types.SeverityUnknown
++	}
++}
++
++// gets the release from the osVersion
++// "w.x.y.z" -> "w.x"
++func OsVerToRelease(osVer string) string {
++	s := strings.Split(osVer, ".")
++	if s[len(s)-1] == "0" {
++		return "LINCD"
++	}
++	return strings.Join(s[:2], ".")
++}
+diff --git a/pkg/vulnsrc/wrlinux/wrlinux_test.go b/pkg/vulnsrc/wrlinux/wrlinux_test.go
+new file mode 100644
+index 0000000..371d24c
+--- /dev/null
++++ b/pkg/vulnsrc/wrlinux/wrlinux_test.go
+@@ -0,0 +1,94 @@
++/*
++ * Copyright (c) 2022 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux_test
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/aquasecurity/trivy-db/pkg/db"
++	"github.com/aquasecurity/trivy-db/pkg/dbtest"
++	"github.com/aquasecurity/trivy-db/pkg/types"
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/wrlinux"
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/vulnerability"
++)
++
++func TestVulnSrc_Update(t *testing.T) {
++	type wantKV struct {
++		key   []string
++		value interface{}
++	}
++	tests := []struct {
++		name       string
++		statuses   []string
++		wantValues []wantKV
++		noBuckets  [][]string
++		wantErr    string
++	}{
++		{
++			name: "happy path",
++			wantValues: []wantKV{
++				{
++					key: []string{"data-source", "WRLinux OS 10.19"},
++					value: types.DataSource{
++						ID:   vulnerability.WRLinux,
++						Name: "WRLinux OS CVE metadata",
++						URL:  "https://support2.windriver.com",
++					},
++				},
++				{
++					key: []string{"advisory-detail", "CVE-2020-24241", "WRLinux OS 10.19", "nasm"},
++					value: types.Advisory{
++						FixedVersion: "10.19.45.11",
++					},
++				},
++				{
++					key: []string{"vulnerability-detail", "CVE-2020-24241", "wrlinux"},
++					value: types.VulnerabilityDetail{
++						Description: "In Netwide Assembler (NASM) 2.15rc10, there is heap use-after-free in saa_wbytes in nasmlib/saa.c.",
++						Severity:    2,
++						References:  []string{},
++					},
++				},
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			cacheDir := dbtest.InitDB(t, nil)
++
++			src := wrlinux.NewVulnSrc()
++			err := src.Update("testdata")
++			if tt.wantErr != "" {
++				require.Error(t, err)
++				assert.Contains(t, err.Error(), tt.wantErr, tt.name)
++				return
++			}
++
++			require.NoError(t, err, tt.name)
++
++			// Compare DB entries
++			require.NoError(t, err, db.Close())
++			dbPath := db.Path(cacheDir)
++			for _, want := range tt.wantValues {
++				dbtest.JSONEq(t, dbPath, want.key, want.value)
++			}
++		})
++	}
++}
+-- 
+2.47.0
+

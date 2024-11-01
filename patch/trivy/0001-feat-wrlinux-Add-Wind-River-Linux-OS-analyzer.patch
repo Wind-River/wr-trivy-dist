@@ -1,0 +1,684 @@
+From 1cd7e22476bfce4999796134669d2fd615fd4c2c Mon Sep 17 00:00:00 2001
+From: David Reyna <David.Reyna@windriver.com>
+Date: Wed, 19 Oct 2022 03:51:15 -0400
+Subject: [PATCH] feat(wrlinux): Add Wind River Linux OS analyzer
+
+This commit was not accepted by the upstream.
+
+Signed-off-by: Sakib Sajal <sakib.sajal@windriver.com>
+Signed-off-by: William Lyu <William.Lyu@windriver.com>
+Signed-off-by: David Reyna <David.Reyna@windriver.com>
+---
+ pkg/detector/ospkg/detect.go                  |   2 +
+ .../testdata/fixtures/data-source.yaml        |  12 ++
+ .../wrlinux/testdata/fixtures/invalid.yaml    |   9 +
+ .../wrlinux/testdata/fixtures/wrlinux.yaml    |  13 ++
+ pkg/detector/ospkg/wrlinux/wrlinux.go         | 161 ++++++++++++++++++
+ pkg/detector/ospkg/wrlinux/wrlinux_test.go    | 131 ++++++++++++++
+ pkg/fanal/analyzer/all/import.go              |   1 +
+ pkg/fanal/analyzer/const.go                   |   2 +
+ .../analyzer/os/wrlinux/testdata/invalid      |   1 +
+ .../analyzer/os/wrlinux/testdata/os-release   |   5 +
+ pkg/fanal/analyzer/os/wrlinux/wrlinux.go      |  77 +++++++++
+ pkg/fanal/analyzer/os/wrlinux/wrlinux_test.go | 103 +++++++++++
+ pkg/fanal/types/const.go                      |   1 +
+ pkg/vulnerability/vulnerability.go            |   4 +
+ 14 files changed, 522 insertions(+)
+ create mode 100644 pkg/detector/ospkg/wrlinux/testdata/fixtures/data-source.yaml
+ create mode 100644 pkg/detector/ospkg/wrlinux/testdata/fixtures/invalid.yaml
+ create mode 100644 pkg/detector/ospkg/wrlinux/testdata/fixtures/wrlinux.yaml
+ create mode 100644 pkg/detector/ospkg/wrlinux/wrlinux.go
+ create mode 100644 pkg/detector/ospkg/wrlinux/wrlinux_test.go
+ create mode 100644 pkg/fanal/analyzer/os/wrlinux/testdata/invalid
+ create mode 100644 pkg/fanal/analyzer/os/wrlinux/testdata/os-release
+ create mode 100644 pkg/fanal/analyzer/os/wrlinux/wrlinux.go
+ create mode 100644 pkg/fanal/analyzer/os/wrlinux/wrlinux_test.go
+
+diff --git a/pkg/detector/ospkg/detect.go b/pkg/detector/ospkg/detect.go
+index fedc8d31c..1e3f7c455 100644
+--- a/pkg/detector/ospkg/detect.go
++++ b/pkg/detector/ospkg/detect.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/suse"
+ 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/ubuntu"
+ 	"github.com/aquasecurity/trivy/pkg/detector/ospkg/wolfi"
++	"github.com/aquasecurity/trivy/pkg/detector/ospkg/wrlinux"
+ 	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
+ 	"github.com/aquasecurity/trivy/pkg/log"
+ 	"github.com/aquasecurity/trivy/pkg/types"
+@@ -48,6 +49,7 @@ var (
+ 		ftypes.Photon:             photon.NewScanner(),
+ 		ftypes.Wolfi:              wolfi.NewScanner(),
+ 		ftypes.Chainguard:         chainguard.NewScanner(),
++		ftypes.WRLinux:            wrlinux.NewScanner(),
+ 	}
+ )
+ 
+diff --git a/pkg/detector/ospkg/wrlinux/testdata/fixtures/data-source.yaml b/pkg/detector/ospkg/wrlinux/testdata/fixtures/data-source.yaml
+new file mode 100644
+index 000000000..11fdaf44d
+--- /dev/null
++++ b/pkg/detector/ospkg/wrlinux/testdata/fixtures/data-source.yaml
+@@ -0,0 +1,12 @@
++- bucket: data-source
++  pairs:
++    - key: WRLinux OS 10.19
++      value:
++        ID: "wrlinux"
++        Name: "WRLinux OS CVE metadata"
++        URL: "https://support2.windriver.com"
++    - key: WRLinux OS 10.20
++      value:
++        ID: "wrlinux"
++        Name: "WRLinux OS CVE metadata"
++        URL: "https://support2.windriver.com"
+diff --git a/pkg/detector/ospkg/wrlinux/testdata/fixtures/invalid.yaml b/pkg/detector/ospkg/wrlinux/testdata/fixtures/invalid.yaml
+new file mode 100644
+index 000000000..3c4edf697
+--- /dev/null
++++ b/pkg/detector/ospkg/wrlinux/testdata/fixtures/invalid.yaml
+@@ -0,0 +1,9 @@
++- bucket: WRLinux OS 10.19
++  pairs:
++    - bucket: jq
++      pairs:
++        - key: CVE-2020-8177
++          value:
++            FixedVersion:
++              - foo
++              - bar
+diff --git a/pkg/detector/ospkg/wrlinux/testdata/fixtures/wrlinux.yaml b/pkg/detector/ospkg/wrlinux/testdata/fixtures/wrlinux.yaml
+new file mode 100644
+index 000000000..9a5f0096f
+--- /dev/null
++++ b/pkg/detector/ospkg/wrlinux/testdata/fixtures/wrlinux.yaml
+@@ -0,0 +1,13 @@
++- bucket: WRLinux OS 10.19
++  pairs:
++    - bucket: wpa
++      pairs:
++        - key: CVE-2021-27803
++          value:
++            FixedVersion: "10.19.5.8"
++        - key: CVE-2019-9243
++          value:
++            FixedVersion: ""
++        - key: CVE-2016-4476
++          value:
++            FixedVersion: "10.19.5.4"
+diff --git a/pkg/detector/ospkg/wrlinux/wrlinux.go b/pkg/detector/ospkg/wrlinux/wrlinux.go
+new file mode 100644
+index 000000000..d4478a801
+--- /dev/null
++++ b/pkg/detector/ospkg/wrlinux/wrlinux.go
+@@ -0,0 +1,161 @@
++/*
++ * Copyright (c) 2022-2024 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux
++
++import (
++	"context"
++	"time"
++
++	"golang.org/x/xerrors"
++	"k8s.io/utils/clock"
++
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/wrlinux"
++	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
++	"github.com/aquasecurity/trivy/pkg/log"
++	"github.com/aquasecurity/trivy/pkg/types"
++	"github.com/aquasecurity/trivy/pkg/scanner/utils"
++	"fmt"
++	"strings"
++	"strconv"
++)
++
++var (
++	eolDates = map[string]time.Time{
++		"10.19": time.Date(2024, 11, 30, 23, 59, 59, 0, time.UTC),
++		"10.21": time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC),
++		"10.22": time.Date(2027, 6, 30, 23, 59, 59, 0, time.UTC),
++		"10.23": time.Date(2028, 6, 30, 23, 59, 59, 0, time.UTC),
++		"10.24": time.Date(2029, 6, 30, 23, 59, 59, 0, time.UTC),
++	}
++)
++
++type options struct {
++	clock clock.Clock
++}
++
++type option func(*options)
++
++func WithClock(clock clock.Clock) option {
++	return func(opts *options) {
++		opts.clock = clock
++	}
++}
++
++// Scanner implements the WRLinux scanner
++type Scanner struct {
++	vs wrlinux.VulnSrc
++	*options
++}
++
++// NewScanner is the factory method for Scanner
++func NewScanner(opts ...option) *Scanner {
++	o := &options{
++		clock: clock.RealClock{},
++	}
++
++	for _, opt := range opts {
++		opt(o)
++	}
++	return &Scanner{
++		vs:      wrlinux.NewVulnSrc(),
++		options: o,
++	}
++}
++
++// Detect scans and returns vulnerabilities using wrlinux scanner
++func (s *Scanner) Detect(ctx context.Context, osVer string, _ *ftypes.Repository, pkgs []ftypes.Package) ([]types.DetectedVulnerability, error) {
++	log.InfoContext(ctx, "Detecting Wind River Linux vulnerabilities...", log.String("os_version", osVer),
++		log.Int("pkg_num", len(pkgs)))
++
++	var vulns []types.DetectedVulnerability
++	for _, pkg := range pkgs {
++		advisories, err := s.vs.Get(osVer, pkg.SrcName)
++		if err != nil {
++			return nil, xerrors.Errorf("failed to get Wind River Linux advisory: %w", err)
++		}
++
++		for _, adv := range advisories {
++			vuln := types.DetectedVulnerability{
++				VulnerabilityID:  adv.VulnerabilityID,
++				PkgID:            pkg.ID,
++				PkgName:          pkg.Name,
++				InstalledVersion: utils.FormatVersion(pkg),
++				FixedVersion:     adv.FixedVersion,
++				PkgIdentifier:    pkg.Identifier,
++				Layer:            pkg.Layer,
++				Custom:           adv.Custom,
++				DataSource:       adv.DataSource,
++			}
++
++			if adv.FixedVersion == "" {
++				vulns = append(vulns, vuln)
++				continue
++			}
++			if osVerLT(osVer, strings.Split(adv.FixedVersion, " ")[0]) {
++				vuln.FixedVersion = adv.FixedVersion
++				vulns = append(vulns, vuln)
++			}
++		}
++	}
++	return vulns, nil
++}
++
++// IsSupportedVersion checks if the OS version reached end-of-support.
++func (s *Scanner) IsSupportedVersion(ctx context.Context, osFamily ftypes.OSType, osVer string) bool {
++	release := OsVerToRelease(osVer)
++	if release == "LINCD" {
++		return true
++	}
++	eol, ok := eolDates[release]
++	if !ok {
++		log.InfoContext(ctx, "This OS version is not on the EOL list:", log.String("osFamily", string(osFamily)),log.String("osVer", osVer))
++		return false
++	}
++	return s.clock.Now().Before(eol)
++}
++
++
++// returns true if s1, is strictly less that s2
++// 		   false otherwise
++func osVerLT(s1, s2 string) bool {
++	s1_spl := strings.Split(s1, ".")
++	s2_spl := strings.Split(s2, ".")
++	for i, _ := range s1_spl {
++		n1, err1 := strconv.Atoi(s1_spl[i])
++		if err1 != nil {
++			fmt.Printf("n1 error\n")
++		}
++		n2, err2 := strconv.Atoi(s2_spl[i])
++		if err2 != nil {
++			fmt.Printf("n2 error\n")
++		}
++		if n1 < n2 {
++			return true
++		}
++	}
++	return false
++}
++
++// gets the release from the osVersion
++// "w.x.y.z" -> "w.x"
++func OsVerToRelease(osVer string) string {
++	s := strings.Split(osVer, ".")
++	if s[len(s)-1] == "0" {
++		return "LINCD"
++	}
++	return strings.Join(s[:2], ".")
++}
+diff --git a/pkg/detector/ospkg/wrlinux/wrlinux_test.go b/pkg/detector/ospkg/wrlinux/wrlinux_test.go
+new file mode 100644
+index 000000000..90d895614
+--- /dev/null
++++ b/pkg/detector/ospkg/wrlinux/wrlinux_test.go
+@@ -0,0 +1,131 @@
++/*
++ * Copyright (c) 2022 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux_test
++
++import (
++	"sort"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/aquasecurity/trivy-db/pkg/db"
++	dbTypes "github.com/aquasecurity/trivy-db/pkg/types"
++	"github.com/aquasecurity/trivy-db/pkg/vulnsrc/vulnerability"
++	"github.com/aquasecurity/trivy/pkg/dbtest"
++	"github.com/aquasecurity/trivy/pkg/detector/ospkg/wrlinux"
++	ftypes "github.com/aquasecurity/trivy/pkg/fanal/types"
++	"github.com/aquasecurity/trivy/pkg/types"
++)
++
++func TestScanner_Detect(t *testing.T) {
++	type args struct {
++		osVer string
++		pkgs  []ftypes.Package
++	}
++	tests := []struct {
++		name     string
++		args     args
++		fixtures []string
++		want     []types.DetectedVulnerability
++		wantErr  string
++	}{
++		{
++			name:     "happy path",
++			fixtures: []string{"testdata/fixtures/wrlinux.yaml", "testdata/fixtures/data-source.yaml"},
++			args: args{
++				osVer: "10.19.5.6",
++				pkgs: []ftypes.Package{
++					{
++						Name:       "wpa",
++						Version:    "10.19.5.6",
++						SrcName:    "wpa",
++						SrcVersion: "10.19.5.6",
++						Layer: ftypes.Layer{
++							DiffID: "sha256:932da51564135c98a49a34a193d6cd363d8fa4184d957fde16c9d8527b3f3b02",
++						},
++					},
++				},
++			},
++			want: []types.DetectedVulnerability{
++				{
++					PkgName:          "wpa",
++					VulnerabilityID:  "CVE-2019-9243",
++					InstalledVersion: "10.19.5.6",
++					FixedVersion:     "",
++					Layer: ftypes.Layer{
++						DiffID: "sha256:932da51564135c98a49a34a193d6cd363d8fa4184d957fde16c9d8527b3f3b02",
++					},
++					DataSource: &dbTypes.DataSource{
++						ID:   vulnerability.WRLinux,
++						Name: "WRLinux OS CVE metadata",
++						URL:  "https://support2.windriver.com",
++					},
++				},
++				{
++					PkgName:          "wpa",
++					VulnerabilityID:  "CVE-2021-27803",
++					InstalledVersion: "10.19.5.6",
++					FixedVersion:     "10.19.5.8",
++					Layer: ftypes.Layer{
++						DiffID: "sha256:932da51564135c98a49a34a193d6cd363d8fa4184d957fde16c9d8527b3f3b02",
++					},
++					DataSource: &dbTypes.DataSource{
++						ID:   vulnerability.WRLinux,
++						Name: "WRLinux OS CVE metadata",
++						URL:  "https://support2.windriver.com",
++					},
++				},
++			},
++		},
++		{
++			name:     "broken bucket",
++			fixtures: []string{"testdata/fixtures/invalid.yaml", "testdata/fixtures/data-source.yaml"},
++			args: args{
++				osVer: "10.19.5.6",
++				pkgs: []ftypes.Package{
++					{
++						Name:       "jq",
++						Version:    "1.6-r0",
++						SrcName:    "jq",
++						SrcVersion: "1.6-r0",
++					},
++				},
++			},
++			wantErr: "failed to get Wind River Linux advisory",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			_ = dbtest.InitDB(t, tt.fixtures)
++			defer db.Close()
++
++			s := wrlinux.NewScanner()
++			got, err := s.Detect(tt.args.osVer, nil, tt.args.pkgs)
++			if tt.wantErr != "" {
++				require.Error(t, err)
++				assert.Contains(t, err.Error(), tt.wantErr)
++				return
++			}
++			sort.Slice(got, func(i, j int) bool {
++				return got[i].VulnerabilityID < got[j].VulnerabilityID
++			})
++			assert.NoError(t, err)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
+diff --git a/pkg/fanal/analyzer/all/import.go b/pkg/fanal/analyzer/all/import.go
+index 5345073fd..90e848235 100644
+--- a/pkg/fanal/analyzer/all/import.go
++++ b/pkg/fanal/analyzer/all/import.go
+@@ -44,6 +44,7 @@ import (
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/os/redhatbase"
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/os/release"
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/os/ubuntu"
++	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/os/wrlinux"
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/pkg/apk"
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/pkg/dpkg"
+ 	_ "github.com/aquasecurity/trivy/pkg/fanal/analyzer/pkg/rpm"
+diff --git a/pkg/fanal/analyzer/const.go b/pkg/fanal/analyzer/const.go
+index a9733d4b6..49b1fd34e 100644
+--- a/pkg/fanal/analyzer/const.go
++++ b/pkg/fanal/analyzer/const.go
+@@ -26,6 +26,7 @@ const (
+ 	TypeSUSE       Type = "suse"
+ 	TypeUbuntu     Type = "ubuntu"
+ 	TypeUbuntuESM  Type = "ubuntu-esm"
++	TypeWRLinux    Type = "wrlinux"
+ 
+ 	// OS Package
+ 	TypeApk         Type = "apk"
+@@ -163,6 +164,7 @@ var (
+ 		TypeRedHatBase,
+ 		TypeSUSE,
+ 		TypeUbuntu,
++		TypeWRLinux,
+ 		TypeApk,
+ 		TypeDpkg,
+ 		TypeDpkgLicense,
+diff --git a/pkg/fanal/analyzer/os/wrlinux/testdata/invalid b/pkg/fanal/analyzer/os/wrlinux/testdata/invalid
+new file mode 100644
+index 000000000..574c7bd1e
+--- /dev/null
++++ b/pkg/fanal/analyzer/os/wrlinux/testdata/invalid
+@@ -0,0 +1 @@
++Red Hat Linux release 6.2 (Zoot)
+diff --git a/pkg/fanal/analyzer/os/wrlinux/testdata/os-release b/pkg/fanal/analyzer/os/wrlinux/testdata/os-release
+new file mode 100644
+index 000000000..5cce85568
+--- /dev/null
++++ b/pkg/fanal/analyzer/os/wrlinux/testdata/os-release
+@@ -0,0 +1,5 @@
++ID=wrlinux-graphics
++NAME="Wind River Linux Graphics LTS"
++VERSION="10.21.20.5"
++VERSION_ID=10.21.20.5
++PRETTY_NAME="Wind River Linux Graphics LTS 21.20 Update 5"
+diff --git a/pkg/fanal/analyzer/os/wrlinux/wrlinux.go b/pkg/fanal/analyzer/os/wrlinux/wrlinux.go
+new file mode 100644
+index 000000000..bc090c031
+--- /dev/null
++++ b/pkg/fanal/analyzer/os/wrlinux/wrlinux.go
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (c) 2022 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux
++
++import (
++	"bufio"
++	"context"
++	"os"
++	"strings"
++
++	"golang.org/x/xerrors"
++
++	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
++	fos "github.com/aquasecurity/trivy/pkg/fanal/analyzer/os"
++	"github.com/aquasecurity/trivy/pkg/fanal/types"
++	"github.com/aquasecurity/trivy/pkg/fanal/utils"
++)
++
++func init() {
++	analyzer.RegisterAnalyzer(&wrlinuxOSAnalyzer{})
++}
++
++const version = 1
++
++var requiredFiles = []string{
++	"usr/lib/os-release",
++}
++
++type wrlinuxOSAnalyzer struct{}
++
++func (a wrlinuxOSAnalyzer) Analyze(_ context.Context, input analyzer.AnalysisInput) (*analyzer.AnalysisResult, error) {
++	isWrlinux := false
++	scanner := bufio.NewScanner(input.Content)
++	for scanner.Scan() {
++		line := scanner.Text()
++		if strings.HasPrefix(line, "NAME=\"Wind River Linux") {
++			isWrlinux = true
++			continue
++		}
++
++		if isWrlinux && strings.HasPrefix(line, "VERSION_ID=") {
++			return &analyzer.AnalysisResult{
++				OS: types.OS{
++					Family: types.WRLinux,
++					Name:   strings.TrimSpace(line[11:]),
++				},
++			}, nil
++		}
++	}
++	return nil, xerrors.Errorf("wrlinux: %w", fos.AnalyzeOSError)
++}
++
++func (a wrlinuxOSAnalyzer) Required(filePath string, _ os.FileInfo) bool {
++	return utils.StringInSlice(filePath, requiredFiles)
++}
++
++func (a wrlinuxOSAnalyzer) Type() analyzer.Type {
++	return analyzer.TypeWRLinux
++}
++
++func (a wrlinuxOSAnalyzer) Version() int {
++	return version
++}
+diff --git a/pkg/fanal/analyzer/os/wrlinux/wrlinux_test.go b/pkg/fanal/analyzer/os/wrlinux/wrlinux_test.go
+new file mode 100644
+index 000000000..0bc9fa531
+--- /dev/null
++++ b/pkg/fanal/analyzer/os/wrlinux/wrlinux_test.go
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (c) 2022 Wind River Systems, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package wrlinux
++
++import (
++	"context"
++	"os"
++	"testing"
++
++	"github.com/aquasecurity/trivy/pkg/fanal/types"
++
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/aquasecurity/trivy/pkg/fanal/analyzer"
++)
++
++func Test_wrlinuxOSAnalyzer_Analyze(t *testing.T) {
++	tests := []struct {
++		name      string
++		inputFile string
++		want      *analyzer.AnalysisResult
++		wantErr   string
++	}{
++		{
++			name:      "happy path",
++			inputFile: "testdata/os-release",
++			want: &analyzer.AnalysisResult{
++				OS: &types.OS{
++					Family: "wrlinux",
++					Name:   "10.21.20.5",
++				},
++			},
++		},
++		{
++			name:      "sad path",
++			inputFile: "testdata/invalid",
++			wantErr:   "wrlinux: unable to analyze OS information",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			a := wrlinuxOSAnalyzer{}
++			f, err := os.Open(tt.inputFile)
++			require.NoError(t, err)
++			defer f.Close()
++
++			ctx := context.Background()
++			got, err := a.Analyze(ctx, analyzer.AnalysisInput{
++				FilePath: "usr/lib/os-release",
++				Content:  f,
++			})
++			if tt.wantErr != "" {
++				require.NotNil(t, err)
++				assert.Contains(t, err.Error(), tt.wantErr)
++				return
++			} else {
++				require.NoError(t, err)
++			}
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
++
++func Test_wrlinuxOSAnalyzer_Required(t *testing.T) {
++	tests := []struct {
++		name     string
++		filePath string
++		want     bool
++	}{
++		{
++			name:     "happy path",
++			filePath: "usr/lib/os-release",
++			want:     true,
++		},
++		{
++			name:     "sad path",
++			filePath: "usr/lib/invalid",
++			want:     false,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			a := wrlinuxOSAnalyzer{}
++			got := a.Required(tt.filePath, nil)
++			assert.Equal(t, tt.want, got)
++		})
++	}
++}
+diff --git a/pkg/fanal/types/const.go b/pkg/fanal/types/const.go
+index c304f40ba..c45990399 100644
+--- a/pkg/fanal/types/const.go
++++ b/pkg/fanal/types/const.go
+@@ -41,6 +41,7 @@ const (
+ 	SLES               OSType = "suse linux enterprise server"
+ 	Ubuntu             OSType = "ubuntu"
+ 	Wolfi              OSType = "wolfi"
++	WRLinux            OSType = "wrlinux"
+ )
+ 
+ // Programming language dependencies
+diff --git a/pkg/vulnerability/vulnerability.go b/pkg/vulnerability/vulnerability.go
+index 6c1e35427..59120621d 100644
+--- a/pkg/vulnerability/vulnerability.go
++++ b/pkg/vulnerability/vulnerability.go
+@@ -39,6 +39,10 @@ var (
+ 			"https://hackerone.com",
+ 		},
+ 		vulnerability.RubySec: {"https://groups.google.com"},
++		vulnerability.WRLinux: {
++			"http://www.windriver.com",
++			"https://support2.windriver.com",
++		},
+ 	}
+ )
+ 
+-- 
+2.47.0
+
